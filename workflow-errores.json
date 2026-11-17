@@ -1,0 +1,154 @@
+{
+  "name": "Resu - registro de errores",
+  "nodes": [
+    {
+      "parameters": {},
+      "id": "4ceea2dd-5fd2-4b7d-9b3c-32dd52a5069a",
+      "name": "Error Trigger",
+      "type": "n8n-nodes-base.errorTrigger",
+      "typeVersion": 1,
+      "position": [
+        0,
+        208
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "append",
+        "documentId": {
+          "__rl": true,
+          "mode": "id",
+          "value": "1IToBF2YaqIWWlfWuKVTUT1Gz-dNjicPJeqMdf9j3wpg",
+          "cachedResultName": "PE3 · Registro de resúmenes"
+        },
+        "sheetName": {
+          "__rl": true,
+          "mode": "list",
+          "value": "3002",
+          "cachedResultName": "errores"
+        },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "fecha": "={{ $now.setZone(\"America/Argentina/Buenos_Aires\").toFormat(\"yyyy-MM-dd HH:mm:ss\") }}",
+            "workflow": "={{ $json.workflow?.name ?? \"\" }}",
+            "nodo": "={{ $json.execution?.lastNodeExecuted ?? \"\" }}",
+            "mensaje": "={{ $json.execution?.error?.message ?? \"\" }}",
+            "execution_url": "={{ $json.execution?.url ?? \"\" }}"
+          },
+          "matchingColumns": [],
+          "schema": [
+            {
+              "id": "fecha",
+              "displayName": "fecha",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "workflow",
+              "displayName": "workflow",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "nodo",
+              "displayName": "nodo",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "mensaje",
+              "displayName": "mensaje",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "execution_url",
+              "displayName": "execution_url",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "58f2fb3d-f376-4222-b994-bd31ab5c7afa",
+      "name": "Guardar error",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.7,
+      "position": [
+        256,
+        208
+      ],
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 2000,
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "vAbzlUbeBgFwaTG7",
+          "name": "Google Sheets account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "content": "## Errores\nSi falla el workflow del proyecto final (en produccion) se dispara este y anota en la hoja errores el nodo, el mensaje y el link a la ejecucion.",
+        "height": 224,
+        "width": 416,
+        "color": 3
+      },
+      "id": "399cf8a1-031b-411a-a9d0-4f730c560d22",
+      "name": "Sticky Note 5646d020",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        -32,
+        112
+      ]
+    }
+  ],
+  "pinData": {},
+  "connections": {
+    "Error Trigger": {
+      "main": [
+        [
+          {
+            "node": "Guardar error",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": true,
+  "settings": {
+    "executionOrder": "v1",
+    "binaryMode": "separate",
+    "availableInMCP": true
+  },
+  "versionId": "974e1551-5a2c-4603-96c4-d42579b7fb2a",
+  "meta": {
+    "aiBuilderAssisted": true,
+    "builderVariant": "mcp",
+    "instanceId": "2b483868e9f53165d2b67d67828e51575ae4da2c79dc0458809811cfa7bc4be4"
+  },
+  "nodeGroups": [],
+  "id": "1TzN4DgjLbKi0yPy",
+  "tags": []
+}
