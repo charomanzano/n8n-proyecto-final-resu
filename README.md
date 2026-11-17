@@ -161,7 +161,25 @@ Un nodo de IA simple (por ejemplo *Message a model*) recibe un texto y devuelve 
 - Las salidas que no son críticas (métricas, derivación, mail) tienen *continue on error*: si falla el mail, el usuario igual recibe su respuesta.
 - Lo que no está controlado va al **Error Workflow** (`Resu - registro de errores`), que anota en la hoja `errores` el nodo que falló, el mensaje y el link a la ejecución.
 
-### Pruebas realizadas (devoluciones 4 y 5)
+### Pruebas realizadas
+
+El workflow tiene dos triggers y n8n ejecuta cada uno por separado, así que probé cada parte por su lado. **Primero la carga**, porque sin fragmentos en Supabase el agente no tiene dónde buscar. **Después el chat.**
+
+#### Prueba 1: carga de resúmenes (Schedule Trigger)
+
+| Paso | Resultado |
+|---|---|
+| Leer resumenes (Sheets) | 1 resumen en estado `creado` (Economía - Unidad 1) |
+| Leer indexados + Filtrar nuevos | 0 indexados antes → 1 resumen nuevo para cargar |
+| Descargar Doc (Drive) | Google Doc exportado como texto |
+| Text Splitter + Embeddings Gemini | **14 fragmentos** de hasta 1000 caracteres (13.175 en total) |
+| Supabase Vector Store | 14 filas en la tabla `documents`, con materia, unidad y link en la metadata |
+| Anotar indexado | Fila en la hoja `indexados` → la próxima noche no lo vuelve a cargar |
+| **Total** | **✅ Éxito en 18,8 s** |
+
+![Carga de resúmenes OK](capturas/02-ingesta-rag-ok.png)
+
+#### Prueba 2: atención por WhatsApp (Webhook), devoluciones 4 y 5
 Todas con el **payload real de la WhatsApp Cloud API** (`entry[0].changes[0].value.messages[0]`).
 
 | Caso | Mensaje | Resultado | Latencia |
