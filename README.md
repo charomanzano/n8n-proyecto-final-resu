@@ -178,6 +178,7 @@ El workflow tiene dos triggers y n8n ejecuta cada uno por separado, así que pro
 | **Total** | **✅ Éxito en 18,8 s** |
 
 ![Carga de resúmenes OK](capturas/02-ingesta-rag-ok.png)
+![Hoja indexados](capturas/07-hoja-indexados.png)
 
 #### Prueba 2: atención por WhatsApp (Webhook), devoluciones 4 y 5
 Todas con el **payload real de la WhatsApp Cloud API** (`entry[0].changes[0].value.messages[0]`).
@@ -214,6 +215,8 @@ Cada mensaje deja una fila en la hoja `metricas`:
 Las fallas no controladas quedan en la hoja `errores`, y los documentos cargados en `indexados`.
 
 ![Métricas](capturas/06-hoja-metricas.png)
+
+**Algo que aprendí con las pruebas:** lancé varios mensajes de prueba casi al mismo tiempo, y de los 4 que tenían que dejar métricas quedaron 3 filas. Falta la del mensaje vacío (el evento de estado no deja métrica a propósito). Todo indica que dos ejecuciones escribieron en la hoja en el mismo instante y una pisó a la otra. Con el volumen real (pocos mensajes y espaciados) no pasa, pero es un **límite de usar Google Sheets como base de métricas con concurrencia**. Si el volumen crece, las métricas tendrían que ir a una tabla de Postgres (ya tengo Supabase), que maneja inserciones simultáneas sin perder datos.
 
 ### Umbrales para reevaluar la infraestructura
 
