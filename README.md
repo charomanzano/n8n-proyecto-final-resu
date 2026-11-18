@@ -1,245 +1,101 @@
-# Resu: asistente de WhatsApp con RAG (n8n)
+# Resu - asistente de WhatsApp con RAG
 
-Proyecto final del curso **IA Automation** de Coderhouse.
+Proyecto final del curso de IA Automation de Coderhouse.
 
-Resu es el asistente de WhatsApp de mi grupo de estudio (Ingeniería en Sistemas, UTN). Los compañeros le escriben para saber qué resúmenes hay, pedir el link o preguntar sobre lo que dice un resumen. Si no puede resolver la consulta, me la deriva a mí.
+Resu es un asistente de WhatsApp para mi grupo de estudio de Ingeniería en Sistemas (UTN). Los compañeros le escriben para saber qué resúmenes hay, pedir el link o preguntar algo sobre lo que dice un resumen. Si no puede resolver la consulta, me la pasa a mí.
 
-Es la continuación del proyecto de las preentregas:
-- **PE2:** ingesta del material de estudio (webhook + PDF).
-- **PE3:** agente que genera los resúmenes en Google Drive y los registra en Sheets.
-- **PE4:** asistente de WhatsApp que pasa los links.
-- **Proyecto final (este):** le sumé **RAG** para que pueda responder sobre el **contenido** de los resúmenes, más memoria persistente, manejo de errores, métricas y aviso por mail.
+Es la continuación de las preentregas: en la PE3 armé el agente que genera los resúmenes y los registra en Google Sheets, y en la PE4 el asistente de WhatsApp que pasaba los links. Para el final le agregué RAG para que pueda responder sobre el contenido, memoria persistente, manejo de errores, métricas y un aviso por mail cuando me deriva algo.
 
----
-
-## Contenido del repo
-
-| Archivo | Qué es |
-|---|---|
-| `workflow-agente-rag.json` | Workflow principal exportado de n8n |
-| `workflow-errores.json` | Error workflow (registra fallas no controladas) |
-| `capturas/` | Canvas y ejecuciones de prueba |
-| `README.md` | Este documento |
-
----
-
-## 1. Caso de negocio y ROI
-
-### El proceso manual
-Cuando se acercan los parciales, me escriben por WhatsApp preguntando:
-- si hay resumen de tal materia o unidad, y que les pase el link;
-- dudas puntuales sobre algo que está en un resumen ("¿qué entraba en la unidad 1?").
-
-Para cada consulta tengo que buscar en Drive, copiar el link, a veces abrir el resumen para contestar, y responder. Calculo **unos 5 minutos por consulta**, y muchas veces la respuesta está en el resumen que ya hice.
-
-### Números (estimados)
-
-| | Valor |
-|---|---|
-| Consultas por semana (época de parciales) | ~15 |
-| Tiempo manual por consulta | ~5 min |
-| Tiempo manual por mes | ~5 h |
-| Consultas que Resu resuelve sola (link o contenido) | ~70 % (el resto se deriva) |
-| **Tiempo ahorrado por mes** | **~3,5 h** |
-| Costo por mensaje respondido por el agente | ~USD 0,02 (Claude Sonnet 5, ~4.500 tokens de entrada) |
-| Costo por mes (60 mensajes) | ~USD 1,20 |
-| Embeddings (Gemini) y Supabase | USD 0 (planes gratuitos) |
-| Tiempo de implementación | ~20 h (repartidas entre las preentregas y el final) |
-
-Con estos números, la implementación se recupera en unos **6 meses de cursada** solo por el tiempo ahorrado. Además, la respuesta pasa de "cuando yo vea el mensaje" a **3-7 segundos**, que en época de parciales es lo que más importa.
-
-### Por qué conviene automatizarlo
-- Es **repetitivo** y la información **ya existe** (resúmenes en Drive y su registro en Sheets).
-- Escala sin trabajo extra: con 15 o con 150 consultas por semana yo hago lo mismo, que es atender solo las derivaciones.
-- Los datos llegan de **más de una fuente**: los mensajes de WhatsApp y los resúmenes en Sheets/Drive.
-
-### Límites del ROI (cuándo deja de tener sentido)
-- **Poco volumen:** con menos de ~3 consultas por semana (fuera de época de parciales) no se justifica. Contestar a mano es más rápido que mantener el sistema.
-- **Pocos resúmenes:** si hay 2 o 3 resúmenes, alcanza con una lista fija de links. El RAG suma cuando hay muchos documentos y preguntas sobre su contenido.
-- **Mucho volumen:** con más de ~100 mensajes por día, el costo del modelo pasa a ser relevante (ver umbrales en la sección 6). Ahí conviene un modelo más barato o reevaluar la infraestructura.
-
----
-
-## 2. Cómo funciona
+En el repo están los dos workflows exportados (`workflow-agente-rag.json` y `workflow-errores.json`), las capturas y este README.
 
 ![Canvas](capturas/01-canvas-completo.png)
 
-El workflow tiene **dos entradas**:
+## Caso de negocio y ROI
 
-**Entrada 1: mensajes de WhatsApp (Webhook).** Recibe el JSON con el formato real de la WhatsApp Cloud API.
-1. **Normalizar mensaje:** saca número, nombre, tipo y texto. Funciona con el formato de Meta y con uno simple para pruebas.
-2. **Switch tipo de mensaje:**
-   - texto → agente;
-   - texto vacío o audio/imagen → respuesta fija, sin gastar IA;
-   - eventos de estado (sent, delivered, read) y payloads inválidos → 200 y se ignoran.
-3. **AI Agent - Resu:** Claude + memoria Postgres + 2 herramientas (`listar_resumenes` y `buscar_en_resumenes`). Devuelve JSON con `respuesta`, `accion`, `motivo_derivacion` y `fuentes`.
-4. **IF respuesta ok:** valida que la respuesta no venga vacía y que la acción sea válida. Si no, pasa a un fallback.
-5. **Armar mensaje:** arma el payload para `POST /messages` de WhatsApp y calcula la latencia.
-6. **Salidas:**
-   - **Prototipo (activo):** `Respond to Webhook` devuelve el JSON que se enviaría.
-   - **Producción (desactivado):** nodo *WhatsApp Business Cloud* para el envío real.
-   - **Si se deriva:** fila en la hoja `derivaciones` + **mail a mí** con el mensaje.
-   - **Siempre:** una fila en la hoja `metricas`.
+En época de parciales me escriben bastante por WhatsApp para pedir resúmenes o preguntar cosas que están en ellos. Por cada consulta tengo que buscar en Drive, copiar el link y a veces abrir el resumen para contestar. Calculo unos 5 minutos por consulta y unas 15 consultas por semana, o sea unas 5 horas por mes.
 
-**Entrada 2: carga de resúmenes (Schedule + Google Sheets + Drive).** Todas las noches:
-1. Lee la hoja de resúmenes (Google Sheets) y la de ya indexados.
-2. Filtra los que están `creado` y todavía no se cargaron.
-3. Para cada uno: descarga el Google Doc como texto, lo parte en fragmentos, genera embeddings y lo guarda en **Supabase**.
-4. Lo anota en la hoja `indexados` para no cargarlo dos veces.
+Estimo que Resu puede resolver solo alrededor del 70% (links y preguntas de contenido), así que me ahorraría unas 3,5 horas por mes. El costo es bajo: cada respuesta del agente sale unos USD 0,02 (Claude Sonnet, unos 4.500 tokens por mensaje), así que con 60 mensajes por mes es poco más de un dólar. Supabase y los embeddings de Gemini los uso en el plan gratis. Me llevó unas 20 horas armarlo entre las preentregas y el final, así que se recupera en unos 6 meses de cursada. Además, la respuesta tarda entre 3 y 7 segundos en vez de "cuando yo vea el mensaje".
 
-![Ingesta](capturas/02-ingesta-rag-ok.png)
+Deja de tener sentido si hay muy pocas consultas (menos de 3 por semana es más rápido contestar a mano) o si hay muy pocos resúmenes (con 2 o 3 alcanza con una lista de links fija). Y si el volumen crece mucho, el costo del modelo empieza a pesar y habría que pasar a uno más barato.
 
-### Prototipo vs. producción (devolución 1)
-En el canvas están separadas con dos notas de color:
-- **Prototipo (verde, activo):** como todavía no tengo cuenta de Meta, el workflow responde al webhook con el JSON exacto que se mandaría a la API. Así se puede probar todo sin WhatsApp real.
-- **Producción (naranja, desactivado):** el nodo *WhatsApp Business Cloud* ya está configurado con el número y el texto. Para activarlo falta:
-  1. cuenta de Meta Developers y token permanente (System User);
-  2. Phone Number ID;
-  3. cambiar el Webhook por el *WhatsApp Trigger*.
+## Cómo funciona
 
----
+El workflow tiene dos partes que no están unidas por flechas: se conectan porque las dos usan la misma tabla de Supabase.
 
-## 3. Por qué un AI Agent con RAG y no un nodo de IA simple
+**Carga de resúmenes (abajo).** Corre todas las noches. Lee la hoja de resúmenes de Google Sheets, se fija cuáles no se cargaron todavía, baja cada Google Doc de Drive, lo parte en pedazos de 1000 caracteres, genera los embeddings y los guarda en Supabase con la materia, la unidad y el link. Al final lo anota en la hoja `indexados` para no cargarlo dos veces.
 
-Un nodo de IA simple (por ejemplo *Message a model*) recibe un texto y devuelve otro. Acá eso no alcanza, porque para cada mensaje hay que **decidir qué hacer**:
+**Atención por WhatsApp (arriba).** Recibe el mensaje por webhook con el formato de la WhatsApp Cloud API. Con un Switch solo paso al agente los mensajes de texto: si viene vacío o es un audio contesto algo fijo, y los eventos de estado (entregado, leído) los ignoro. El agente tiene dos herramientas: `listar_resumenes`, que mira la hoja para saber qué hay y pasar links, y `buscar_en_resumenes`, que busca en Supabase los pedazos más parecidos a la pregunta. Con eso decide si responder, pedir una aclaración o derivarme el mensaje. Si deriva, queda una fila en la hoja `derivaciones` y me llega un mail.
 
-- **Elegir herramienta:** si preguntan qué resúmenes hay o piden un link, usa `listar_resumenes` (Sheets). Si preguntan por el contenido, usa `buscar_en_resumenes` (RAG). A veces usa las dos.
-- **Tomar una decisión que cambia el flujo:** el campo `accion` puede ser `responder`, `aclarar` o `derivar`. Con `derivar`, el workflow toma otro camino (registro en Sheets + mail).
-- **Recordar la conversación:** si alguien primero pregunta "¿hay de Economía?" y después "¿y qué entra?", necesita el contexto anterior. Por eso tiene memoria por número de teléfono.
+Como todavía no tengo cuenta de Meta, la respuesta sale por un `Respond to Webhook` que devuelve el JSON que se mandaría a la API (prototipo). El nodo de WhatsApp para el envío real está configurado pero desactivado. En el canvas están separados con una nota verde (prototipo) y una naranja (producción). Para activarlo falta la cuenta de Meta, un token permanente y el Phone Number ID.
 
-**Por qué RAG:** los resúmenes son largos (el de Economía U1 tiene 13.000 caracteres) y van a ser cada vez más. Meter todos en el prompt sería caro y lento. Con RAG solo se mandan al modelo los **4 fragmentos más parecidos** a la pregunta. Además, el modelo responde **con lo que dicen mis resúmenes** y no con conocimiento general, y si no encuentra nada, deriva en vez de inventar.
+## Por qué un AI Agent con RAG
 
----
+Con un nodo de IA simple no alcanza porque para cada mensaje hay que tomar decisiones: elegir qué herramienta usar (la lista de resúmenes, la búsqueda en el contenido o las dos) y decidir si responder, aclarar o derivar. Esa decisión cambia el camino del flujo, porque si deriva se registra y me llega un mail. También necesita memoria para entender preguntas que siguen a una anterior ("¿y qué entra en esa unidad?").
 
-## 4. Elección de modelos: local vs. nube
+El RAG es necesario porque los resúmenes son largos (el de Economía tiene 13.000 caracteres) y van a ser cada vez más. Pasarlos enteros al modelo sería caro y lento. Así solo le paso los 4 pedazos más relevantes, y el agente responde con lo que dicen mis resúmenes y no con conocimiento general. Si no encuentra nada, deriva en vez de inventar.
 
-| Paso | Modelo | Dónde corre | Por qué |
-|---|---|---|---|
-| Agente | **Claude Sonnet 5** | Nube (Anthropic, vía créditos de n8n) | Ver abajo |
-| Embeddings | **Gemini `gemini-embedding-001`** (3072 dims) | Nube (API de Google, key propia) | Ver abajo |
+## Elección de modelos y vector store
 
-### Agente: nube
-- **Costo según volumen:** con ~60 mensajes por mes el costo es de alrededor de USD 1. Un modelo local (Ollama) necesitaría una PC o servidor prendido todo el día, que sale más caro que eso.
-- **Privacidad:** los datos son resúmenes de estudio y números de compañeros. No es información sensible, pero igual el agente **no comparte datos de otras personas** (está en el system prompt) y en Sheets solo guardo lo necesario para derivar.
-- **Independencia de proveedores:** es el punto débil de la nube, así que lo tuve en cuenta. El modelo es un sub-nodo: cambiarlo por otro (OpenAI, Gemini o Ollama) es reemplazar un nodo, sin tocar el resto del flujo.
-- **Técnico:** uso n8n Cloud, que no puede llegar a un Ollama corriendo en mi compu sin exponerlo a internet.
-- **Calidad:** el agente tiene que seguir un prompt largo, elegir herramientas y devolver JSON válido siempre. Los modelos locales chicos fallan más en eso.
+Para el agente uso Claude Sonnet en la nube. Con el volumen que tengo, el costo es de alrededor de un dólar por mes, y correr un modelo local con Ollama necesitaría una computadora prendida todo el tiempo. Además uso n8n Cloud, que no puede conectarse a un Ollama en mi compu sin exponerlo a internet. Los datos no son sensibles (resúmenes y números de compañeros) y en el prompt le pido que no comparta datos de otras personas. El riesgo de depender de un proveedor lo tengo en cuenta: el modelo es un sub-nodo, así que cambiarlo por otro es reemplazar ese nodo nada más.
 
-### Embeddings: nube, y un problema real que tuve que resolver
-- Primero usé `text-embedding-3-small` de OpenAI con los créditos de n8n, pero **daba timeout siempre**: el pedido quedaba colgado 90 segundos y fallaba.
-- Lo cambié por **Gemini** y con los créditos de n8n la carga funcionó, pero la **búsqueda** devolvía *404 model not found*: el gateway solo tenía habilitado el endpoint de carga, no el de consulta.
-- La solución fue usar una **API key propia de Google AI Studio** (gratis). Con eso funcionaron las dos cosas.
-- Esto confirma lo del punto anterior: depender de un proveedor es un riesgo, pero como los embeddings también son un sub-nodo, el cambio fue rápido.
+Con los embeddings justo me pasó eso. Primero usé los de OpenAI con los créditos de n8n, pero daban timeout siempre. Los cambié por Gemini, también con los créditos de n8n: la carga funcionaba pero la búsqueda daba un error 404. Al final usé una API key propia de Google AI Studio, que es gratis, y anduvo todo. Uso `gemini-embedding-001`, que genera vectores de 3072 dimensiones.
 
-### Vector store: Supabase (pgvector)
-- **Gratis** y **persistente**. El *Simple Vector Store* de n8n vive en memoria y se pierde.
-- Es **Postgres**, así que uso la misma base para la **memoria del chat** (tabla `n8n_chat_histories`). Era la devolución 6: antes la memoria estaba en RAM.
-- Tabla `documents` con `embedding vector(3072)` y la función `match_documents` para buscar por similitud coseno.
-- **RLS activado:** la tabla no se puede leer con la clave pública. n8n entra con la `service_role`.
-- **Fragmentos:** 1000 caracteres con 150 de solapamiento (*Recursive Character Text Splitter*). Es un tamaño que entra en una idea del resumen sin cortar definiciones a la mitad.
-- **Metadata en cada fragmento:** materia, unidad y link al Doc. Así el agente puede citar la fuente y pasar el link.
+Como vector store elegí Supabase (Postgres con pgvector) porque es gratis, es persistente y en la misma base guardo la memoria del chat, que antes estaba en RAM. La tabla tiene RLS activado, así que no se puede leer con la clave pública; n8n entra con la `service_role`.
 
----
+## Manejo de errores
 
-## 5. Manejo de errores y casos límite
+Los dos puntos principales donde algo puede fallar son:
 
-### Puntos del flujo donde algo puede fallar
+1. **El agente o el modelo.** Si el agente falla, reintenta una vez y si sigue fallando va por la salida de error a un nodo que responde "tuve un problema, le paso tu mensaje a Micaela" y deriva. Si el agente responde pero la respuesta viene vacía o con una acción que no es válida, un IF lo detecta y también deriva.
+2. **Las herramientas (Supabase, embeddings, Sheets).** Si una herramienta falla, el agente recibe el error y el prompt le indica que no invente y derive. Esto pasó de verdad mientras probaba (el 404 de Gemini) y el agente derivó como tenía que hacerlo.
 
-**1. El agente o el modelo fallan, o la respuesta no sirve**
-- El nodo del agente tiene *Retry on Fail* (2 intentos) y salida de error. Si igual falla, el nodo `Set error agente` arma un mensaje de "tuve un problema, le paso tu mensaje a Micaela" y **deriva**.
-- `IF respuesta ok` revisa que `respuesta` no venga vacía y que `accion` sea una de las 3 válidas. Si no, `Set respuesta vacia` también deriva. Esto cubre las **respuestas nulas del LLM**.
+Además, el Switch del principio filtra lo que no es texto, los nodos de Sheets, Drive, Supabase y Gmail tienen reintentos, y si falla el mail o las métricas el usuario igual recibe su respuesta. Lo que no está controlado va a un workflow de errores aparte que lo anota en la hoja `errores`.
 
-**2. Se cae una herramienta (Supabase, embeddings o Sheets)**
-- Si la herramienta falla (timeout, 404, Supabase caído), el agente recibe el error y el system prompt le dice: *"si una herramienta falla, decí que no pudiste consultar y derivá"*.
-- **Lo probé en la práctica:** con el error 404 de Gemini, el agente no inventó nada, avisó que tuvo un problema técnico y derivó (ver tabla de pruebas).
+## Pruebas
 
-**3. Llega algo que no es un mensaje de texto**
-- El Switch del inicio separa texto, texto vacío, audio/multimedia y eventos de estado. Solo el texto llega al agente, así no se gastan tokens en cosas que no tienen respuesta.
+Primero probé la carga, porque sin datos en Supabase el agente no tiene dónde buscar. Se cargó el resumen de Economía, unidad 1: 14 pedazos en 18,8 segundos.
 
-**Además:**
-- Los nodos de Sheets, Drive, Supabase y Gmail tienen *Retry on Fail* (3 intentos, 2-3 s entre cada uno).
-- Las salidas que no son críticas (métricas, derivación, mail) tienen *continue on error*: si falla el mail, el usuario igual recibe su respuesta.
-- Lo que no está controlado va al **Error Workflow** (`Resu - registro de errores`), que anota en la hoja `errores` el nodo que falló, el mensaje y el link a la ejecución.
-
-### Pruebas realizadas
-
-El workflow tiene dos triggers y n8n ejecuta cada uno por separado, así que probé cada parte por su lado. **Primero la carga**, porque sin fragmentos en Supabase el agente no tiene dónde buscar. **Después el chat.**
-
-#### Prueba 1: carga de resúmenes (Schedule Trigger)
-
-| Paso | Resultado |
-|---|---|
-| Leer resumenes (Sheets) | 1 resumen en estado `creado` (Economía - Unidad 1) |
-| Leer indexados + Filtrar nuevos | 0 indexados antes → 1 resumen nuevo para cargar |
-| Descargar Doc (Drive) | Google Doc exportado como texto |
-| Text Splitter + Embeddings Gemini | **14 fragmentos** de hasta 1000 caracteres (13.175 en total) |
-| Supabase Vector Store | 14 filas en la tabla `documents`, con materia, unidad y link en la metadata |
-| Anotar indexado | Fila en la hoja `indexados` → la próxima noche no lo vuelve a cargar |
-| **Total** | **✅ Éxito en 18,8 s** |
-
-![Carga de resúmenes OK](capturas/02-ingesta-rag-ok.png)
+![Carga de resúmenes](capturas/02-ingesta-rag-ok.png)
 ![Hoja indexados](capturas/07-hoja-indexados.png)
 
-#### Prueba 2: atención por WhatsApp (Webhook), devoluciones 4 y 5
-Todas con el **payload real de la WhatsApp Cloud API** (`entry[0].changes[0].value.messages[0]`).
+Después probé el chat con mensajes en el formato real de la WhatsApp Cloud API:
 
-| Caso | Mensaje | Resultado | Latencia |
+| Caso | Mensaje | Qué hizo | Tiempo |
 |---|---|---|---|
-| Pregunta de contenido (RAG) | "Qué son los factores de la producción?" | `responder`: explicó tierra, trabajo y capital según el resumen, citó *Economía - 1* y pasó el link | 6,9 s |
-| Pedido ambiguo | "pasame el resumen porfa" | `aclarar`: preguntó de qué materia y unidad | 3,1 s |
-| Fuera de alcance | "cuando es el parcial de probabilidad?" | `derivar`: fila en `derivaciones` + mail | 4,0 s |
-| Herramienta caída | Pregunta de contenido con el error 404 de embeddings | `derivar`: no inventó y avisó del problema técnico | 6,5 s |
-| Mensaje vacío | `"   "` | Respuesta fija pidiendo el tema (sin IA) | 0,02 s |
-| Audio | `type: audio` | "Por ahora solo leo mensajes de texto" (sin IA) | 0,01 s |
-| Evento de estado | `statuses: delivered` | Ignorado con 200 | 0,07 s |
+| Pregunta de contenido | "Qué son los factores de la producción?" | Respondió con lo del resumen y el link | 6,9 s |
+| Pedido ambiguo | "pasame el resumen porfa" | Preguntó de qué materia y unidad | 3,1 s |
+| Fuera de alcance | "cuando es el parcial de probabilidad?" | Derivó (fila en la hoja y mail) | 4,0 s |
+| Herramienta caída | Pregunta de contenido con el error de embeddings | No inventó y derivó | 6,5 s |
+| Mensaje vacío | "   " | Respuesta fija, sin usar IA | 0,02 s |
+| Audio | type: audio | "Por ahora solo leo mensajes de texto" | 0,01 s |
+| Evento de estado | statuses: delivered | Lo ignoró | 0,07 s |
 
 ![Ejecución RAG](capturas/03-ejecucion-rag.png)
 ![Ejecución derivación](capturas/04-ejecucion-derivacion.png)
 ![Mail de derivación](capturas/05-mail-derivacion.png)
 
----
+## Monitoreo y escala
 
-## 6. Monitoreo, umbrales y escala (devoluciones 2, 3 y 6)
-
-### Qué mido
-Cada mensaje deja una fila en la hoja `metricas`:
-
-| Columna | Para qué |
-|---|---|
-| `latencia_ms` | Tiempo desde que llega el mensaje hasta que está la respuesta |
-| `accion` | responder / aclarar / derivar → % de derivación |
-| `estado` | ok / fallback / error → tasa de errores |
-| `tokens_aprox` | Consumo estimado por ejecución (n8n no expone los tokens reales del agente en el flujo, así que lo estimo con el tamaño del prompt, la respuesta y los fragmentos) |
-| `tipo_evento` | Cuántos mensajes son texto, audio, estados, etc. |
-
-Las fallas no controladas quedan en la hoja `errores`, y los documentos cargados en `indexados`.
+Cada mensaje deja una fila en la hoja `metricas` con la latencia, la acción (responder, aclarar o derivar), si salió bien o por un fallback, y una estimación de tokens. Es una estimación porque n8n no da los tokens reales del agente dentro del flujo.
 
 ![Métricas](capturas/06-hoja-metricas.png)
 
-**Algo que aprendí con las pruebas:** lancé varios mensajes de prueba casi al mismo tiempo, y de los 4 que tenían que dejar métricas quedaron 3 filas. Falta la del mensaje vacío (el evento de estado no deja métrica a propósito). Todo indica que dos ejecuciones escribieron en la hoja en el mismo instante y una pisó a la otra. Con el volumen real (pocos mensajes y espaciados) no pasa, pero es un **límite de usar Google Sheets como base de métricas con concurrencia**. Si el volumen crece, las métricas tendrían que ir a una tabla de Postgres (ya tengo Supabase), que maneja inserciones simultáneas sin perder datos.
+En las pruebas mandé varios mensajes casi al mismo tiempo y se perdió una fila de métricas: dos ejecuciones escribieron en la hoja a la vez y una pisó a la otra. Con el volumen real no debería pasar, pero si crece, las métricas tendrían que ir a una tabla de Postgres en Supabase en vez de Sheets.
 
-### Umbrales para reevaluar la infraestructura
+Los umbrales a partir de los cuales reevaluaría la infraestructura son:
 
 | Métrica | Umbral | Qué haría |
 |---|---|---|
-| Costo del modelo | > USD 20 por mes | Pasar el agente a un modelo más barato (Haiku o Gemini Flash) y dejar Sonnet solo para preguntas de contenido |
-| Volumen | > 100 mensajes por día | Revisar el plan de n8n (límite de ejecuciones) y la cola de concurrencia |
-| Latencia p95 | > 15 s | Bajar `topK` del RAG (4 → 2), achicar la ventana de memoria (10 → 5) o usar un modelo más rápido |
-| Tasa de error / fallback | > 5 % en una semana | Revisar la hoja `errores`, el estado de los proveedores y los prompts |
-| % de derivación | > 40 % | Faltan resúmenes o el prompt es muy restrictivo: revisar qué se pregunta en `derivaciones` |
-| Tamaño en Supabase | > 400 MB (el plan gratis es de 500 MB) | Limpiar fragmentos viejos o pasar a un plan pago |
+| Costo del modelo | más de USD 20 por mes | Pasar a un modelo más barato (Haiku o Gemini Flash) |
+| Volumen | más de 100 mensajes por día | Revisar el plan de n8n y la concurrencia |
+| Latencia | más de 15 s | Traer menos pedazos del RAG o achicar la memoria |
+| Errores o fallbacks | más del 5% en una semana | Revisar la hoja de errores y los prompts |
+| Derivaciones | más del 40% | Faltan resúmenes o el prompt es muy restrictivo |
+| Espacio en Supabase | más de 400 MB (el plan gratis tiene 500) | Limpiar o pasar a un plan pago |
 
-### Reintentos y concurrencia
-- **Reintentos:** agente 2 intentos; Sheets, Drive, Supabase y Gmail 3 intentos con espera de 2-3 s. El envío de WhatsApp también tiene 3 reintentos para cuando se active.
-- **Concurrencia:** n8n Cloud limita las ejecuciones simultáneas según el plan. Si llegan muchos mensajes a la vez, quedan en cola y no se pierden.
-  - Cada conversación es independiente (la memoria es por número), así que procesarlas en paralelo no genera conflictos.
-  - La ingesta procesa **un documento a la vez** (Loop con batch de 1) para no saturar la API de embeddings.
-  - Si el volumen crece mucho, el paso siguiente sería n8n en modo *queue* con workers.
-- **Memoria persistente:** Postgres en Supabase con ventana de 10 mensajes por número.
+Sobre concurrencia: n8n Cloud limita cuántas ejecuciones corren a la vez según el plan, y las que sobran quedan en cola. Como la memoria es por número de teléfono, las conversaciones no se mezclan aunque corran en paralelo. La carga de resúmenes procesa un documento a la vez para no saturar la API de embeddings.
 
----
-
-## 7. System prompt del agente
+## System prompt del agente
 
 ```text
 # ROL
@@ -277,20 +133,16 @@ Elegí UNA acción por mensaje:
 Respondé solo con el JSON pedido: "respuesta" (texto para WhatsApp), "accion" ("responder" | "aclarar" | "derivar"), "motivo_derivacion" (vacío si no derivás) y "fuentes" (lista, puede estar vacía).
 ```
 
-**Formato de salida (Structured Output Parser):**
+La salida del agente pasa por un Structured Output Parser con este formato:
+
 ```json
 { "respuesta": "texto para WhatsApp", "accion": "responder", "motivo_derivacion": "", "fuentes": ["Economía - 1 - Factores de la producción"] }
 ```
 
----
+## Tabla en Supabase
 
-## 8. Cómo usarlo
+Para que funcione hay que crear la tabla y la función de búsqueda en el SQL Editor de Supabase:
 
-**Requisitos:**
-- n8n Cloud.
-- Credenciales: Google Sheets, Google Drive, Gmail, Supabase API (`service_role`), Postgres (Session pooler de Supabase) y Google Gemini API.
-
-**Supabase:** ejecutar en el SQL Editor:
 ```sql
 create extension if not exists vector;
 
@@ -319,35 +171,3 @@ begin
 end;
 $$;
 ```
-
-**Pasos:**
-1. Importar los dos `.json` en n8n y asignar las credenciales.
-2. En el workflow principal, configurar *Settings → Error Workflow* con `Resu - registro de errores`.
-3. Correr la carga de resúmenes con *Execute* desde el Schedule Trigger.
-4. Probar mandando un POST al webhook `/webhook-test/pf-resu-whatsapp` con un JSON de WhatsApp. Ejemplo:
-
-```json
-{
-  "object": "whatsapp_business_account",
-  "entry": [{ "id": "WABA_ID", "changes": [{ "field": "messages", "value": {
-    "messaging_product": "whatsapp",
-    "metadata": { "display_phone_number": "15550783881", "phone_number_id": "106540352242922" },
-    "contacts": [{ "profile": { "name": "Tomi" }, "wa_id": "5491155667788" }],
-    "messages": [{ "from": "5491155667788", "id": "wamid.X", "timestamp": "1763421000",
-                   "type": "text", "text": { "body": "Qué son los factores de la producción?" } }]
-  }}]}]
-}
-```
-
----
-
-## 9. Checklist de la entrega
-
-- [x] El repo tiene el `.json` del workflow exportado de n8n.
-- [x] El workflow tiene al menos dos entradas distintas: **Webhook** (WhatsApp) y **Google Sheets** (registro de resúmenes) + Google Drive.
-- [x] El AI Agent tiene un system prompt que define rol, alcance, tono, límites, qué hacer ante ambigüedad y casos fuera de alcance (sección 7).
-- [x] El README explica el caso de negocio, el ROI y sus límites (sección 1).
-- [x] El README justifica el modelo (local vs. nube) y el vector store / embeddings (sección 4).
-- [x] El README explica por qué hace falta un AI Agent con RAG (sección 3).
-- [x] Hay manejo de errores y validación antes de la salida final (sección 5).
-- [x] Capturas del canvas y de ejecuciones en `/capturas`.
